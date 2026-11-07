@@ -1,13 +1,25 @@
 {
-  "name": "kakeibo",
-  "main": "src/index.js",
-  "compatibility_date": "2025-10-01",
-  "assets": {
-    "directory": "./public",
-    "run_worker_first": ["/api/*"]
-  },
-  "triggers": { "crons": ["0 15 * * *"] },
-  "d1_databases": [
-    { "binding": "DB", "database_name": "kakeibo", "database_id": "ここにwrangler d1 createで出たIDを貼る" }
-  ]
+	"name": "kakeibo",
+	"main": "src/index.js",
+	"compatibility_date": "2025-10-01",
+	"assets": {
+		"directory": "./public",
+		"run_worker_first": [
+			"/api/*"
+		]
+	},
+	"triggers": {
+		"crons": [
+			"0 15 * * *"
+		]
+	},
+	"d1_databases": [
+		
+		{
+			"binding": "kakeibo",
+			"database_name": "kakeibo",
+			"database_id": "7688b378-56aa-4dc8-ae23-3e590bb49861",
+			"remote": true
+		}
+	]
 }
