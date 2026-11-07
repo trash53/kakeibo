@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#1a73e8">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<style>
+  body { font-family: sans-serif; margin: 0 auto; padding: 12px; max-width: 640px; }
+  nav { display: flex; gap: 6px; margin-bottom: 12px; }
+  nav button { flex: 1; padding: 10px; border: 1px solid #888; background: #fff; border-radius: 6px; }
+  nav button.on { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+  section { display: none; }
+  section.on { display: block; }
+  .big { display: block; padding: 18px; text-align: center; background: #1a73e8; color: #fff; border-radius: 8px; font-size: 18px; }
+  input, select { width: 100%; padding: 10px; margin: 4px 0 10px; box-sizing: border-box; font-size: 16px; }
+  .btn { padding: 10px 14px; border: 1px solid #888; background: #fff; border-radius: 6px; font-size: 14px; }
+  #msg { margin: 12px 0; padding: 10px; background: #eef4ff; border-radius: 6px; min-height: 1em; }
+  #msg.err { background: #fdeaea; color: #b00020; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #ddd; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+  th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: right; }
+  .bar { background: #1a73e8; height: 10px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<nav>
+  <button id="t-add" class="on" onclick="show('add')">登録</button>
+  <button id="t-hist" onclick="show('hist')">履歴</button>
+  <button id="t-ana" onclick="show('ana')">分析</button>
+  <button id="t-fix" onclick="show('fix')">固定費</button>
+</nav>
+<div id="msg"></div>
+
+<!-- 登録タブ:レシート撮影 + 手入力 -->
+<section id="s-add" class="on">
+  <label class="big">📷 レシートを撮影
+    <!-- capture によりスマホのカメラアプリが直接起動する -->
+    <input id="photo" type="file" accept="image/*" capture="environment" hidden>
+  </label>
+  <h3>手入力(クレジットカード決済など)</h3>
+  <form id="f">
+    日付<input id="f-date" type="date" required>
+    店名<input id="f-store" type="text" required>
+    金額<input id="f-amount" type="number" inputmode="numeric" required>
+    支払方法<select id="f-pay"></select>
+    カテゴリ<select id="f-cat"></select>
+    <button class="btn" type="submit">登録</button>
+  </form>
+</section>
+
+<!-- 履歴タブ -->
+<section id="s-hist"><div id="hist"></div></section>
+
+<!-- 分析タブ -->
+<section id="s-ana"><div id="ana"></div></section>
+
+<!-- 固定費タブ -->
+<section id="s-fix">
+  <h3>固定費の登録(テンプレート)</h3>
+  <form id="fx">
+    名称<input id="fx-name" type="text" placeholder="家賃、車ローン、Netflix など" required>
+    金額<input id="fx-amount" type="number" inputmode="numeric" required>
+    毎月の支払日(31は月末扱い)<input id="fx-day" type="number" min="1" max="31" value="1" required>
+    支払方法<select id="fx-pay"></select>
+    カテゴリ<select id="fx-cat"></select>
+    <button class="btn" type="submit">固定費を追加</button>
+  </form>
+  <div id="fix-list"></div>
+  <h3>一括登録</h3>
+  <p><small>登録済みの月・固定費はスキップします。毎日0時(日本時間)に、今月分で支払日を迎えたものは自動登録されます。</small></p>
+  <input id="fx-month" type="month">
+  <button class="btn" onclick="applyFixed()">この月の固定費をまとめて登録</button>
+</section>
+
+<script>
+  // ---------- 共通ヘルパー ----------
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const yen = n => '¥' + Number(n).toLocaleString();
+  // サーバー関数名 → Workers API への対応表(画面側のコードは変更不要にするための薄い層)
+  const call = async (path, method = 'GET', body) => {
+    const res = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  };
+  const run = (fn, ...a) => ({
+    getOptions:     () => call('/api/options'),
+    getRecent:      n => call('/api/records?limit=' + n),
+    getSummary:     () => call('/api/summary'),
+    addManual:      rec => call('/api/records', 'POST', rec),
+    deleteRecord:   id => call('/api/records/' + encodeURIComponent(id), 'DELETE'),
+    getFixed:       () => call('/api/fixed'),
+    addFixed:       rec => call('/api/fixed', 'POST', rec),
+    deleteFixed:    id => call('/api/fixed/' + encodeURIComponent(id), 'DELETE'),
+    applyFixed:     month => call('/api/fixed-apply', 'POST', { month }),
+    processReceipt: (image, mimeType) => call('/api/receipt', 'POST', { image, mimeType }),
+  }[fn](...a));
+  const setMsg = (html, isErr) => { $('msg').innerHTML = html; $('msg').className = isErr ? 'err' : ''; };
+  const errText = e => 'エラー: ' + esc((e && e.message) || e);
+
+  // ---------- タブ切り替え ----------
+  function show(name) {
+    ['add', 'hist', 'ana', 'fix'].forEach(n => {
+      $('s-' + n).className = n === name ? 'on' : '';
+      $('t-' + n).className = n === name ? 'on' : '';
+    });
+    if (name === 'hist') loadHistory();
+    if (name === 'ana') loadSummary();
+    if (name === 'fix') loadFixed();
+  }
+
+  // ---------- 初期化:選択肢を取得し、日付に今日を入れる ----------
+  $('f-date').value = new Date().toLocaleDateString('sv-SE');
+  run('getOptions').then(o => {
+    $('f-pay').innerHTML = o.payments.map(p => `<option>${esc(p)}</option>`).join('');
+    $('f-cat').innerHTML = o.categories.map(c => `<option>${esc(c)}</option>`).join('');
+    $('fx-pay').innerHTML = $('f-pay').innerHTML;
+    $('fx-cat').innerHTML = $('f-cat').innerHTML;
+  }).catch(e => setMsg(errText(e), true));
+
+  // ---------- 画像を縮小(送信サイズ削減)してbase64化 ----------
+  function resize(file, max = 1600) {
+    return new Promise((ok, ng) => {
+      const img = new Image();
+      img.onload = () => {
+        const s = Math.min(1, max / Math.max(img.width, img.height));
+        const c = document.createElement('canvas');
+        c.width = img.width * s; c.height = img.height * s;
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        ok(c.toDataURL('image/jpeg', 0.8).split(',')[1]);
+      };
+      img.onerror = () => ng(new Error('画像を読み込めませんでした'));
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+  // ---------- レシート撮影 → 自動登録 ----------
+  $('photo').onchange = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setMsg('読み取り中…(数秒かかります)');
+    try {
+      const rec = await resize(file);
+      const saved = await run('processReceipt', rec, 'image/jpeg');
+      showSaved(saved);
+    } catch (err) { setMsg(errText(err), true); }
+    e.target.value = ''; // 同じ画像を再選択できるようにする
+  };
+
+  // 登録結果を表示し、取り消しボタンを出す
+  function showSaved(r) {
+    setMsg(`登録しました:${esc(r.date)} / ${esc(r.store)} / ${yen(r.amount)} / ${esc(r.payment)} / ${esc(r.category)}
+      <br><button class="btn" onclick="undo('${r.id}')">取り消し</button>`);
+  }
+  async function undo(id) {
+    try { await run('deleteRecord', id); setMsg('取り消しました'); loadHistory(); }
+    catch (err) { setMsg(errText(err), true); }
+  }
+
+  // ---------- 手入力 ----------
+  $('f').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      const saved = await run('addManual', {
+        date: $('f-date').value, store: $('f-store').value, amount: $('f-amount').value,
+        payment: $('f-pay').value, category: $('f-cat').value,
+      });
+      showSaved(saved);
+      $('f-store').value = ''; $('f-amount').value = '';
+    } catch (err) { setMsg(errText(err), true); }
+  };
+
+  // ---------- 履歴(直近30件・削除可) ----------
+  async function loadHistory() {
+    try {
+      const list = await run('getRecent', 30);
+      $('hist').innerHTML = list.length ? list.map(r => `<div class="row">
+        <div>${esc(r.date)} ${esc(r.store)}<br><small>${esc(r.category)} / ${esc(r.payment)}</small></div>
+        <div>${yen(r.amount)} <button class="btn" onclick="if(confirm('削除しますか?'))undo('${r.id}')">削除</button></div>
+      </div>`).join('') : 'データがありません';
+    } catch (err) { setMsg(errText(err), true); }
+  }
+
+  // ---------- 分析(月別合計・月×カテゴリ) ----------
+  async function loadSummary() {
+    try {
+      const s = await run('getSummary');
+      const months = Object.keys(s.monthly).sort();
+      if (!months.length) { $('ana').innerHTML = 'データがありません'; return; }
+      const max = Math.max(...months.map(m => s.monthly[m]));
+      // 月別合計(簡易バー付き)
+      let html = '<h3>月別の支出合計</h3>' + months.map(m => `<div class="row">
+        <div style="width:70px">${m}</div>
+        <div style="flex:1;margin:0 8px"><div class="bar" style="width:${s.monthly[m] / max * 100}%"></div></div>
+        <div>${yen(s.monthly[m])}</div></div>`).join('');
+      // 月×カテゴリの表(推移を見る用)
+      html += '<h3>カテゴリ別の推移</h3><div class="scroll"><table><tr><th>月</th>' +
+        s.categories.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>' +
+        months.map(m => `<tr><th>${m}</th>` +
+          s.categories.map(c => `<td>${s.matrix[m][c] ? yen(s.matrix[m][c]) : '-'}</td>`).join('') + '</tr>').join('') +
+        '</table></div>';
+      $('ana').innerHTML = html;
+    } catch (err) { setMsg(errText(err), true); }
+  }
+
+  // ---------- 固定費 ----------
+  $('fx-month').value = new Date().toLocaleDateString('sv-SE').slice(0, 7);
+  async function loadFixed() {
+    try {
+      const list = await run('getFixed');
+      $('fix-list').innerHTML = list.length ? list.map(f => `<div class="row">
+        <div>${esc(f.name)}<br><small>毎月${f.day}日 / ${esc(f.category)} / ${esc(f.payment)}</small></div>
+        <div>${yen(f.amount)} <button class="btn" onclick="if(confirm('削除しますか?'))delFixed('${f.id}')">削除</button></div>
+      </div>`).join('') + `<div class="row"><b>月合計</b><b>${yen(list.reduce((a, f) => a + f.amount, 0))}</b></div>`
+        : '固定費が未登録です';
+    } catch (err) { setMsg(errText(err), true); }
+  }
+  $('fx').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await run('addFixed', { name: $('fx-name').value, amount: $('fx-amount').value, day: $('fx-day').value,
+                              payment: $('fx-pay').value, category: $('fx-cat').value });
+      $('fx-name').value = ''; $('fx-amount').value = '';
+      setMsg('固定費を追加しました'); loadFixed();
+    } catch (err) { setMsg(errText(err), true); }
+  };
+  async function delFixed(id) {
+    try { await run('deleteFixed', id); loadFixed(); } catch (err) { setMsg(errText(err), true); }
+  }
+  async function applyFixed() {
+    const m = $('fx-month').value;
+    if (!m) return;
+    try {
+      const r = await run('applyFixed', m);
+      setMsg(`${esc(m)} の固定費を ${r.added} 件登録しました(登録済みでスキップ: ${r.skipped} 件)`);
+    } catch (err) { setMsg(errText(err), true); }
+  }
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+</script>
+</body>
+</html>

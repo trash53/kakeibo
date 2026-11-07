@@ -1,0 +1,13 @@
+{
+  "name": "kakeibo",
+  "main": "src/index.js",
+  "compatibility_date": "2025-10-01",
+  "assets": {
+    "directory": "./public",
+    "run_worker_first": ["/api/*"]
+  },
+  "triggers": { "crons": ["0 15 * * *"] },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "kakeibo", "database_id": "ここにwrangler d1 createで出たIDを貼る" }
+  ]
+}
